@@ -2,6 +2,7 @@ module Request exposing
     ( Request, HttpMethod(..), map
     , Config, simple, simpleFromHttpResponse
     , http, get, post, put, delete, patch, options, head
+    , postJson, putJson, deleteJson, patchJson
     , Expect, expectJson, expectBytes, expectString, expectWhatever
     , cmd, task
     , withJsonBody, withStringBody, withEmptyBody, withBytesBody, withFileBody
@@ -22,6 +23,11 @@ module Request exposing
 ## Create requests
 
 @docs http, get, post, put, delete, patch, options, head
+
+
+## Create JSON requests
+
+@docs postJson, putJson, deleteJson, patchJson
 
 
 ## Declare task content
@@ -316,24 +322,6 @@ mapResponse fn response =
             Http.GoodStatus_ meta (fn body)
 
 
-
--- case response of
---     Http.BadUrl_ url ->
---         Err (Http.BadUrl url)
---     Http.Timeout_ ->
---         Err Http.Timeout
---     Http.NetworkError_ ->
---         Err Http.NetworkError
---     Http.BadStatus_ metadata _ ->
---         Err (Http.BadStatus metadata.statusCode)
---     Http.GoodStatus_ _ body ->
---         case BD.decode decoder body of
---             Just value ->
---                 Ok value
---             Nothing ->
---                 Err (Http.BadBody "Invalid body")
-
-
 mapExpect : (a -> b) -> Expect a -> Expect b
 mapExpect fn expect =
     case expect of
@@ -384,11 +372,35 @@ post =
     http POST
 
 
+{-| A convenience function that creates a POST request with a JSON body and
+expecting a JSON response.
+
+    Request.postJson
+        { url = "https://example.com"
+        , body = Json.Encode.object [ ( "key", Json.Encode.string "value" ) ]
+        , decoder = Json.Decode.string
+        }
+
+-}
+postJson : { url : url, decoder : D.Decoder a, body : D.Value } -> Request url a
+postJson { url, body, decoder } =
+    post { url = url, expect = expectJson decoder }
+        |> withJsonBody body
+
+
 {-| Create a PUT request.
 -}
 put : { url : url, expect : Expect a } -> Request url a
 put =
     http PUT
+
+
+{-| Create a PUT request with a JSON body and expecting a JSON response.
+-}
+putJson : { url : url, decoder : D.Decoder a, body : D.Value } -> Request url a
+putJson { url, body, decoder } =
+    put { url = url, expect = expectJson decoder }
+        |> withJsonBody body
 
 
 {-| Create a DELETE request.
@@ -398,11 +410,33 @@ delete =
     http DELETE
 
 
+{-| Create a DELETE request with an optional JSON body and expecting a JSON response.
+-}
+deleteJson : { url : url, decoder : D.Decoder a, body : Maybe D.Value } -> Request url a
+deleteJson { url, body, decoder } =
+    case body of
+        Nothing ->
+            delete { url = url, expect = expectJson decoder }
+                |> withEmptyBody
+
+        Just data ->
+            delete { url = url, expect = expectJson decoder }
+                |> withJsonBody data
+
+
 {-| Create a PATCH request.
 -}
 patch : { url : url, expect : Expect a } -> Request url a
 patch =
     http PATCH
+
+
+{-| Create a PATCH request with a JSON body and expecting a JSON response.
+-}
+patchJson : { url : url, decoder : D.Decoder a, body : D.Value } -> Request url a
+patchJson { url, body, decoder } =
+    patch { url = url, expect = expectJson decoder }
+        |> withJsonBody body
 
 
 {-| Create an OPTIONS request.
