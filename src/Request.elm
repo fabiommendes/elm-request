@@ -3,7 +3,7 @@ module Request exposing
     , Config, simple, fromHttpResponse
     , http, get, post, put, delete, patch, options, head
     , postJson, putJson, deleteJson, patchJson
-    , Expect, expectJson, expectBytes, expectString, expectWhatever
+    , Expect(..), expectJson, expectBytes, expectString, expectWhatever
     , cmd, task
     , withJsonBody, withStringBody, withEmptyBody, withBytesBody, withFileBody
     , withBody, withHeaders, withQuery, withIntQuery
@@ -218,8 +218,8 @@ resolveHeaders defaultHeaders headers =
 -}
 type Expect value
     = ExpectJson (D.Decoder value)
-    | ExpectString (String -> value)
     | ExpectBytes (BD.Decoder value)
+    | ExpectString (String -> value)
     | ExpectWhatever (() -> value)
 
 
