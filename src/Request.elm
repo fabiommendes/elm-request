@@ -1,6 +1,6 @@
 module Request exposing
     ( Request, HttpMethod(..), map
-    , Config, simple, simpleFromHttpResponse
+    , Config, simple, fromHttpResponse
     , http, get, post, put, delete, patch, options, head
     , postJson, putJson, deleteJson, patchJson
     , Expect, expectJson, expectBytes, expectString, expectWhatever
@@ -17,7 +17,7 @@ module Request exposing
 
 ## Config objects
 
-@docs Config, simple, simpleFromHttpResponse
+@docs Config, simple, fromHttpResponse
 
 
 ## Create requests
@@ -103,9 +103,9 @@ map fn (Req request) =
 {-| Config objects allow Requests that uses different URL representations
 than Strings and different error types than Http.Error.
 -}
-type alias Config url error =
+type alias Config url error data =
     { toUrl : url -> String
-    , fromHttpResponse : Http.Response String -> error
+    , fromHttpResponse : Expect data -> Http.Response String -> error
     , timeout : Maybe Float
     , risky : Bool
     , headers : List ( String, String )
@@ -114,10 +114,10 @@ type alias Config url error =
 
 {-| The default config
 -}
-simple : Config String Http.Error
+simple : Config String Http.Error data
 simple =
     { toUrl = identity
-    , fromHttpResponse = simpleFromHttpResponse
+    , fromHttpResponse = \_ -> fromHttpResponse
     , timeout = Nothing
     , risky = False
     , headers = []
@@ -129,8 +129,8 @@ simple =
 Sometimes it is easier to use this to create custom error types.
 
 -}
-simpleFromHttpResponse : Http.Response String -> Http.Error
-simpleFromHttpResponse response =
+fromHttpResponse : Http.Response String -> Http.Error
+fromHttpResponse response =
     case response of
         Http.BadUrl_ url ->
             Http.BadUrl url
@@ -251,24 +251,24 @@ expectWhatever =
     ExpectWhatever (\_ -> ())
 
 
-expectToHttpResolver : Config url error -> Expect a -> Http.Resolver error a
+expectToHttpResolver : Config url error a -> Expect a -> Http.Resolver error a
 expectToHttpResolver cfg expect =
     case expect of
         ExpectJson decoder ->
-            Http.stringResolver (stringResolver cfg (D.decodeString decoder >> Result.toMaybe))
+            Http.stringResolver (stringResolver cfg expect (D.decodeString decoder >> Result.toMaybe))
 
         ExpectBytes decoder ->
-            Http.bytesResolver (bytesResolver cfg decoder)
+            Http.bytesResolver (bytesResolver cfg expect decoder)
 
         ExpectString fn ->
-            Http.stringResolver (stringResolver cfg (fn >> Just))
+            Http.stringResolver (stringResolver cfg expect (fn >> Just))
 
         ExpectWhatever fn ->
-            Http.stringResolver (stringResolver cfg (\_ -> fn () |> Just))
+            Http.stringResolver (stringResolver cfg expect (\_ -> fn () |> Just))
 
 
-bytesResolver : Config url error -> BD.Decoder a -> Http.Response Bytes -> Result error a
-bytesResolver cfg decoder response =
+bytesResolver : Config url error a -> Expect a -> BD.Decoder a -> Http.Response Bytes -> Result error a
+bytesResolver cfg expect decoder response =
     case response of
         Http.GoodStatus_ meta body ->
             case BD.decode decoder body of
@@ -277,17 +277,17 @@ bytesResolver cfg decoder response =
 
                 Nothing ->
                     Http.GoodStatus_ meta ""
-                        |> cfg.fromHttpResponse
+                        |> cfg.fromHttpResponse expect
                         |> Err
 
         _ ->
             mapResponse (\_ -> "") response
-                |> cfg.fromHttpResponse
+                |> cfg.fromHttpResponse expect
                 |> Err
 
 
-stringResolver : Config url error -> (String -> Maybe a) -> Http.Response String -> Result error a
-stringResolver cfg parser response =
+stringResolver : Config url error a -> Expect a -> (String -> Maybe a) -> Http.Response String -> Result error a
+stringResolver cfg expect parser response =
     case response of
         Http.GoodStatus_ meta body ->
             case parser body of
@@ -296,11 +296,11 @@ stringResolver cfg parser response =
 
                 Nothing ->
                     Http.GoodStatus_ meta body
-                        |> cfg.fromHttpResponse
+                        |> cfg.fromHttpResponse expect
                         |> Err
 
         _ ->
-            cfg.fromHttpResponse response |> Err
+            cfg.fromHttpResponse expect response |> Err
 
 
 mapResponse : (a -> b) -> Http.Response a -> Http.Response b
@@ -664,7 +664,7 @@ config exported by this package.
         |> Request.cmd Request.simple ResponseReceived
 
 -}
-cmd : Config url error -> (Result error value -> msg) -> Request url value -> Cmd msg
+cmd : Config url error value -> (Result error value -> msg) -> Request url value -> Cmd msg
 cmd cfg onResponse request =
     task cfg request
         |> Task.attempt onResponse
@@ -682,7 +682,7 @@ config exported by this package.
         |> Request.task Request.simple
 
 -}
-task : Config url error -> Request url value -> Task error value
+task : Config url error value -> Request url value -> Task error value
 task cfg (Req request) =
     let
         httpTask =
