@@ -3,8 +3,11 @@ module Request exposing
     , Config, simple
     , http, get, post, put, delete, patch, options, head
     , Expect, expectJson, expectBytes, expectString, expectWhatever
-    , withHeaders, excludeDefaultHeaders, ignoreDefaultHeaders, risky
     , cmd, task
+    , withJsonBody, withStringBody, withBytesBody, withFileBody
+    , withBody, withHeaders, withQuery, withIntQuery
+    , excludeDefaultHeaders, ignoreDefaultHeaders, risky
+    , withEmptyBody
     )
 
 {-|
@@ -27,25 +30,37 @@ module Request exposing
 @docs Expect, expectJson, expectBytes, expectString, expectWhatever
 
 
-## Set request parameters
-
-@docs withHeaders, excludeDefaultHeaders, ignoreDefaultHeaders, risky
-
-
 ## Convert to commands and tasks
 
 @docs cmd, task
+
+
+## Declares the payload
+
+@docs withJsonBody, withStringBody, withJsonBody, withBytesBody, withFileBody
+
+
+## Set request parameters
+
+@docs withBody, withHeaders, withQuery, withIntQuery
+
+
+## Advanced request parameters
+
+@docs excludeDefaultHeaders, ignoreDefaultHeaders, risky
 
 -}
 
 import Bytes exposing (Bytes)
 import Bytes.Decode as BD
 import Dict exposing (Dict)
+import File
 import Http
 import Http.Tasks
 import Json.Decode as D
 import Set exposing (Set)
 import Task exposing (Task)
+import Url.Builder exposing (QueryParameter)
 
 
 {-| Represent an HTTP request
@@ -60,6 +75,7 @@ type Request url value
         , risky : Bool
         , headers : Headers
         , tracker : Maybe String
+        , query : List QueryParameter
         }
 
 
@@ -76,6 +92,7 @@ map fn (Req request) =
         , risky = request.risky
         , headers = request.headers
         , tracker = request.tracker
+        , query = request.query
         }
 
 
@@ -178,6 +195,34 @@ type Expect value
     | ExpectWhatever (() -> value)
 
 
+{-| Declares a request that expects a JSON response handled with the given decoder.
+-}
+expectJson : D.Decoder a -> Expect a
+expectJson decoder =
+    ExpectJson decoder
+
+
+{-| Declares a request that expects a binary response handled with the given decoder.
+-}
+expectBytes : BD.Decoder a -> Expect a
+expectBytes decoder =
+    ExpectBytes decoder
+
+
+{-| Declares a request that expects a simple string response.
+-}
+expectString : Expect String
+expectString =
+    ExpectString identity
+
+
+{-| Ignores the content of the received response.
+-}
+expectWhatever : Expect ()
+expectWhatever =
+    ExpectWhatever (\_ -> ())
+
+
 expectToHttpExpect : (Result Http.Error a -> msg) -> Expect a -> Http.Expect msg
 expectToHttpExpect msg expect =
     case expect of
@@ -266,6 +311,7 @@ http method cfg =
             , include = Dict.empty
             }
         , tracker = Nothing
+        , query = []
         }
 
 
@@ -318,71 +364,6 @@ head =
     http HEAD
 
 
-{-| Declares a request that expects a JSON response handled with the given decoder.
--}
-expectJson : D.Decoder a -> Request url b -> Request url a
-expectJson decoder (Req request) =
-    Req
-        { method = request.method
-        , url = request.url
-        , expect = ExpectJson decoder
-        , timeout = request.timeout
-        , risky = request.risky
-        , headers = request.headers
-        , tracker = request.tracker
-        , body = request.body
-        }
-
-
-{-| Declares a request that expects a binary response handled with the given decoder.
--}
-expectBytes : BD.Decoder a -> Request url b -> Request url a
-expectBytes decoder (Req request) =
-    Req
-        { method = request.method
-        , url = request.url
-        , expect = ExpectBytes decoder
-        , timeout = request.timeout
-        , risky = request.risky
-        , headers = request.headers
-        , tracker = request.tracker
-        , body = request.body
-        }
-
-
-{-| Declares a request that expects a simple string response.
--}
-expectString : Request url b -> Request url String
-expectString (Req request) =
-    Req
-        { method = request.method
-        , url = request.url
-        , expect = ExpectString identity
-        , timeout = request.timeout
-        , risky = request.risky
-        , headers = request.headers
-        , tracker = request.tracker
-        , body = request.body
-        }
-
-
-{-| Ignores the content of the received response.
--}
-expectWhatever : Request url b -> Request url ()
-expectWhatever (Req request) =
-    Req
-        { method = request.method
-        , url = request.url
-        , expect =
-            ExpectWhatever (\_ -> ())
-        , timeout = request.timeout
-        , risky = request.risky
-        , headers = request.headers
-        , tracker = request.tracker
-        , body = request.body
-        }
-
-
 {-| Declares the request as risky (or not) according to the boolean argument.
 
     Request.get
@@ -414,6 +395,114 @@ withHeaders headers (Req request) =
                 (Dict.fromList headers |> Dict.union)
             )
         |> Req
+
+
+{-| Adds a query parameter to the final url
+
+    Request.get
+        { url = "https://example.com"
+        , expect = Request.expectJson Json.Decode.string
+        }
+        |> Request.withQuery "search" "what is the answer to the question of life, the universe and everything?"
+
+-}
+withQuery : String -> String -> Request url a -> Request url a
+withQuery key value (Req request) =
+    request
+        |> updateQuery
+            ((::) (Url.Builder.string key value))
+        |> Req
+
+
+{-| Adds an integer query parameter to the final url
+
+    Request.get
+        { url = "https://example.com"
+        , expect = Request.expectJson Json.Decode.string
+        }
+        |> Request.withIntQuery "default-answer" 42
+
+-}
+withIntQuery : String -> Int -> Request url a -> Request url a
+withIntQuery key value (Req request) =
+    request
+        |> updateQuery
+            ((::) (Url.Builder.int key value))
+        |> Req
+
+
+{-| Set the request body using some instance of Http.Body
+
+    Http.stringBody "text/plain" "Some text"
+
+Requests expose some helper functions, but for more complex cases, you should refer
+to the Http module.
+
+-}
+withBody : Http.Body -> Request url a -> Request url a
+withBody body (Req request) =
+    Req
+        { method = request.method
+        , url = request.url
+        , expect = request.expect
+        , body = body
+        , timeout = request.timeout
+        , risky = request.risky
+        , headers = request.headers
+        , tracker = request.tracker
+        , query = request.query
+        }
+
+
+{-| Set the request body to be empty.
+-}
+withEmptyBody : Request url a -> Request url a
+withEmptyBody =
+    withBody Http.emptyBody
+
+
+{-| Declares a string body by specifing the content type and the data.
+
+    Request.get
+        { url = "https://example.com"
+        , expect = Request.expectJson Json.Decode.string
+        }
+        |> Request.withStringBody "text/plain" "Some text"
+
+-}
+withStringBody : String -> String -> Request url a -> Request url a
+withStringBody mime content =
+    withBody <| Http.stringBody mime content
+
+
+{-| Declares a JSON body
+-}
+withJsonBody : D.Value -> Request url a -> Request url a
+withJsonBody value =
+    withBody <| Http.jsonBody value
+
+
+{-| Declares a File body with a given file and an optional identifier.
+
+The name can be used to track the download progress of the file by subscribing
+to events created by `Http.tracker id onProgressMsg`.
+
+-}
+withFileBody : Maybe String -> File.File -> Request url a -> Request url a
+withFileBody id value request =
+    case ( id, request |> withBody (Http.fileBody value) ) of
+        ( Just name, Req data ) ->
+            Req { data | tracker = Just name }
+
+        ( Nothing, req ) ->
+            req
+
+
+{-| Declares a Binary body with a given content type.
+-}
+withBytesBody : String -> Bytes -> Request url a -> Request url a
+withBytesBody mime value =
+    withBody <| Http.bytesBody mime value
 
 
 {-| Ignore specific default headers declared in the config.
@@ -467,6 +556,11 @@ updateInclude update record =
 updateExclude : (b -> b) -> { a | exclude : b } -> { a | exclude : b }
 updateExclude update record =
     { record | exclude = update record.exclude }
+
+
+updateQuery : (b -> b) -> { a | query : b } -> { a | query : b }
+updateQuery update record =
+    { record | query = update record.query }
 
 
 {-| Convert a request to a command.
