@@ -657,7 +657,7 @@ task cfg (Req request) =
     httpTask
         { method = request.method |> httpMethodToString
         , headers = resolveHeaders cfg.headers request.headers
-        , url = cfg.toUrl request.url
+        , url = cfg.toUrl request.url ++ Url.Builder.toQuery request.query
         , body = request.body
         , resolver = expectToHttpResolver cfg request.expect
         , timeout = request.timeout

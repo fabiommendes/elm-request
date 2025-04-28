@@ -3,7 +3,7 @@
     "name": "fabiommendes/elm-request",
     "summary": "Simple Http requests for humans",
     "license": "BSD-3-Clause",
-    "version": "3.0.0",
+    "version": "3.0.1",
     "exposed-modules": [
         "Request"
     ],
