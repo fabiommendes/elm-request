@@ -1,6 +1,6 @@
 module Request exposing
     ( Request, HttpMethod(..), map
-    , Config, simple
+    , Config, simple, simpleFromHttpResponse
     , http, get, post, put, delete, patch, options, head
     , Expect, expectJson, expectBytes, expectString, expectWhatever
     , cmd, task
@@ -16,7 +16,7 @@ module Request exposing
 
 ## Config objects
 
-@docs Config, simple
+@docs Config, simple, simpleFromHttpResponse
 
 
 ## Create requests
@@ -55,7 +55,6 @@ import Bytes.Decode as BD
 import Dict exposing (Dict)
 import File
 import Http
-import Http.Tasks
 import Json.Decode as D
 import Set exposing (Set)
 import Task exposing (Task)
@@ -100,7 +99,7 @@ than Strings and different error types than Http.Error.
 -}
 type alias Config url error =
     { toUrl : url -> String
-    , fromHttpError : Http.Error -> error
+    , fromHttpResponse : Http.Response String -> error
     , timeout : Maybe Float
     , risky : Bool
     , headers : List ( String, String )
@@ -112,11 +111,35 @@ type alias Config url error =
 simple : Config String Http.Error
 simple =
     { toUrl = identity
-    , fromHttpError = identity
+    , fromHttpResponse = simpleFromHttpResponse
     , timeout = Nothing
     , risky = False
     , headers = []
     }
+
+
+{-| Convert Http.Response to Http.Error
+
+Sometimes it is easier to use this to create custom error types.
+
+-}
+simpleFromHttpResponse : Http.Response String -> Http.Error
+simpleFromHttpResponse response =
+    case response of
+        Http.BadUrl_ url ->
+            Http.BadUrl url
+
+        Http.Timeout_ ->
+            Http.Timeout
+
+        Http.NetworkError_ ->
+            Http.NetworkError
+
+        Http.BadStatus_ metadata _ ->
+            Http.BadStatus metadata.statusCode
+
+        Http.GoodStatus_ _ body ->
+            Http.BadBody body
 
 
 {-| An enum that represent all valid HTTP methods.
@@ -222,60 +245,93 @@ expectWhatever =
     ExpectWhatever (\_ -> ())
 
 
-expectToHttpExpect : (Result Http.Error a -> msg) -> Expect a -> Http.Expect msg
-expectToHttpExpect msg expect =
+expectToHttpResolver : Config url error -> Expect a -> Http.Resolver error a
+expectToHttpResolver cfg expect =
     case expect of
         ExpectJson decoder ->
-            Http.expectJson msg decoder
+            Http.stringResolver (stringResolver cfg (D.decodeString decoder >> Result.toMaybe))
 
         ExpectBytes decoder ->
-            Http.expectBytes msg decoder
+            Http.bytesResolver (bytesResolver cfg decoder)
 
         ExpectString fn ->
-            Http.expectString (Result.map fn >> msg)
+            Http.stringResolver (stringResolver cfg (fn >> Just))
 
         ExpectWhatever fn ->
-            Http.expectWhatever (Result.map fn >> msg)
+            Http.stringResolver (stringResolver cfg (\_ -> fn () |> Just))
 
 
-expectToHttpResolver : Expect a -> Http.Resolver Http.Error a
-expectToHttpResolver expect =
-    case expect of
-        ExpectJson decoder ->
-            Http.Tasks.resolveJson decoder
-
-        ExpectBytes decoder ->
-            Http.bytesResolver (resolveBytes decoder)
-
-        ExpectString fn ->
-            Http.Tasks.customResolver (fn >> Ok)
-
-        ExpectWhatever fn ->
-            Http.Tasks.customResolver (\_ -> Ok (fn ()))
-
-
-resolveBytes : BD.Decoder a -> Http.Response Bytes -> Result Http.Error a
-resolveBytes decoder response =
+bytesResolver : Config url error -> BD.Decoder a -> Http.Response Bytes -> Result error a
+bytesResolver cfg decoder response =
     case response of
-        Http.BadUrl_ url ->
-            Err (Http.BadUrl url)
-
-        Http.Timeout_ ->
-            Err Http.Timeout
-
-        Http.NetworkError_ ->
-            Err Http.NetworkError
-
-        Http.BadStatus_ metadata _ ->
-            Err (Http.BadStatus metadata.statusCode)
-
-        Http.GoodStatus_ _ body ->
+        Http.GoodStatus_ meta body ->
             case BD.decode decoder body of
                 Just value ->
                     Ok value
 
                 Nothing ->
-                    Err (Http.BadBody "Invalid body")
+                    Http.GoodStatus_ meta ""
+                        |> cfg.fromHttpResponse
+                        |> Err
+
+        _ ->
+            mapResponse (\_ -> "") response
+                |> cfg.fromHttpResponse
+                |> Err
+
+
+stringResolver : Config url error -> (String -> Maybe a) -> Http.Response String -> Result error a
+stringResolver cfg parser response =
+    case response of
+        Http.GoodStatus_ meta body ->
+            case parser body of
+                Just value ->
+                    Ok value
+
+                Nothing ->
+                    Http.GoodStatus_ meta body
+                        |> cfg.fromHttpResponse
+                        |> Err
+
+        _ ->
+            cfg.fromHttpResponse response |> Err
+
+
+mapResponse : (a -> b) -> Http.Response a -> Http.Response b
+mapResponse fn response =
+    case response of
+        Http.BadUrl_ url ->
+            Http.BadUrl_ url
+
+        Http.Timeout_ ->
+            Http.Timeout_
+
+        Http.NetworkError_ ->
+            Http.NetworkError_
+
+        Http.BadStatus_ meta body ->
+            Http.BadStatus_ meta (fn body)
+
+        Http.GoodStatus_ meta body ->
+            Http.GoodStatus_ meta (fn body)
+
+
+
+-- case response of
+--     Http.BadUrl_ url ->
+--         Err (Http.BadUrl url)
+--     Http.Timeout_ ->
+--         Err Http.Timeout
+--     Http.NetworkError_ ->
+--         Err Http.NetworkError
+--     Http.BadStatus_ metadata _ ->
+--         Err (Http.BadStatus metadata.statusCode)
+--     Http.GoodStatus_ _ body ->
+--         case BD.decode decoder body of
+--             Just value ->
+--                 Ok value
+--             Nothing ->
+--                 Err (Http.BadBody "Invalid body")
 
 
 mapExpect : (a -> b) -> Expect a -> Expect b
@@ -575,20 +631,9 @@ config exported by this package.
 
 -}
 cmd : Config url error -> (Result error value -> msg) -> Request url value -> Cmd msg
-cmd cfg msg (Req request) =
-    let
-        httpRequest =
-            iff request.risky Http.request Http.riskyRequest
-    in
-    httpRequest
-        { method = request.method |> httpMethodToString
-        , headers = resolveHeaders cfg.headers request.headers
-        , url = cfg.toUrl request.url
-        , body = request.body
-        , expect = expectToHttpExpect (Result.mapError cfg.fromHttpError >> msg) request.expect
-        , tracker = request.tracker
-        , timeout = request.timeout
-        }
+cmd cfg onResponse request =
+    task cfg request
+        |> Task.attempt onResponse
 
 
 {-| Convert a request to a task.
@@ -614,10 +659,9 @@ task cfg (Req request) =
         , headers = resolveHeaders cfg.headers request.headers
         , url = cfg.toUrl request.url
         , body = request.body
-        , resolver = expectToHttpResolver request.expect
+        , resolver = expectToHttpResolver cfg request.expect
         , timeout = request.timeout
         }
-        |> Task.mapError cfg.fromHttpError
 
 
 iff : Bool -> a -> a -> a
