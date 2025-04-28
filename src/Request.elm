@@ -4,10 +4,9 @@ module Request exposing
     , http, get, post, put, delete, patch, options, head
     , Expect, expectJson, expectBytes, expectString, expectWhatever
     , cmd, task
-    , withJsonBody, withStringBody, withBytesBody, withFileBody
+    , withJsonBody, withStringBody, withEmptyBody, withBytesBody, withFileBody
     , withBody, withHeaders, withQuery, withIntQuery
     , excludeDefaultHeaders, ignoreDefaultHeaders, risky
-    , withEmptyBody
     )
 
 {-|
@@ -37,7 +36,7 @@ module Request exposing
 
 ## Declares the payload
 
-@docs withJsonBody, withStringBody, withJsonBody, withBytesBody, withFileBody
+@docs withJsonBody, withStringBody, withEmptyBody, withBytesBody, withFileBody
 
 
 ## Set request parameters
