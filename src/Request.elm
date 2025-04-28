@@ -1,5 +1,5 @@
 module Request exposing
-    ( Request, HttpMethod(..)
+    ( Request, HttpMethod(..), map
     , Config, simple
     , http, get, post, put, delete, patch, options, head
     , Expect, expectJson, expectBytes, expectString, expectWhatever
@@ -9,7 +9,7 @@ module Request exposing
 
 {-|
 
-@docs Request, HttpMethod
+@docs Request, HttpMethod, map
 
 
 ## Config objects
@@ -60,6 +60,22 @@ type Request url value
         , risky : Bool
         , headers : Headers
         , tracker : Maybe String
+        }
+
+
+{-| Modify the expected return value for the effect
+-}
+map : (a -> b) -> Request url a -> Request url b
+map fn (Req request) =
+    Req
+        { method = request.method
+        , url = request.url
+        , expect = mapExpect fn request.expect
+        , body = request.body
+        , timeout = request.timeout
+        , risky = request.risky
+        , headers = request.headers
+        , tracker = request.tracker
         }
 
 
@@ -216,6 +232,22 @@ resolveBytes decoder response =
 
                 Nothing ->
                     Err (Http.BadBody "Invalid body")
+
+
+mapExpect : (a -> b) -> Expect a -> Expect b
+mapExpect fn expect =
+    case expect of
+        ExpectJson decoder ->
+            ExpectJson (D.map fn decoder)
+
+        ExpectBytes decoder ->
+            ExpectBytes (BD.map fn decoder)
+
+        ExpectString f ->
+            ExpectString (f >> fn)
+
+        ExpectWhatever f ->
+            ExpectWhatever (f >> fn)
 
 
 {-| Create a simple http request
